@@ -1,0 +1,171 @@
+###季度排名
+
+### 清空环境并载入库文件
+rm(list=ls())
+library(stringr)
+library(plyr)
+library(ggplot2)
+library(reshape2)
+library(DMwR)
+### 读入当月数据及合并数据
+m1<-read.table("c:/R/hos/drugdata/201801门诊.txt",header=T,stringsAsFactors=F,sep="\t",quote="\"")
+m2<-read.table("c:/R/hos/drugdata/201802门诊.txt",header=T,stringsAsFactors=F,sep="\t",quote="\"")
+m3<-read.table("c:/R/hos/drugdata/201803门诊.txt",header=T,stringsAsFactors=F,sep="\t",quote="\"")
+m4<-read.table("c:/R/hos/drugdata/201804门诊.txt",header=T,stringsAsFactors=F,sep="\t",quote="\"")
+m5<-read.table("c:/R/hos/drugdata/201805门诊.txt",header=T,stringsAsFactors=F,sep="\t",quote="\"")
+
+# x<-rbind(m01,m02)
+# x<-rbind(x,m03)
+# x<-rbind(x,m04)
+# x<-rbind(x,m05)
+#head(x)
+
+###读取药品字典中非停用项目
+drugdic<-read.table("c:/R/hos/drugdata/201803drugdic.txt",header=T,stringsAsFactors=F,sep="\t",quote="\"")
+drugdic<-drugdic[which(drugdic$停用标志!="停用"),]
+head(drugdic)
+###增加药品名称字段
+drugdicname<-subset(drugdic,select = c("药品代码","药品名称"))
+
+##依次改为m01 m02  m03 坏点一季度一算
+#x<-m03
+countoutliers<-function(x,drugdicname){
+
+colnames(x)<-c("patientname","cardID","insurancetype","date","afterdate","ndays","billID",
+               "recipeID","section","docID","doctorname","itemtype","drugtype","drugclassification",
+               "drugID","drugname","price", "quant","fee","reimburatio","dosage","diagnosis")
+
+
+
+### 清洗数据，排除中草药 大输液 日期转为天数
+x<-x[which(x$drugclassification!='中草药'),]#去掉中草药记录
+x<-x[-grep("氯化钠|葡萄糖",x$drugname),]#去掉大输液记录
+x$drugname<-str_trim(x$drugname,side="both")#去除两端空格
+x$date<- as.POSIXct(x$date)#开药日期转为POSIXct格式
+x$month<-format(x$date,"%Y%m")#提取月份数据
+#x[which(nchar(as.character(x1$afterdate))==9),]
+x[which(x$ndays<=0),]$ndays<-NA
+x$daymean<-x$quant/x$ndays#药品日用量
+x$recipe<- as.character(x$recipe)#处方号转为字符格式
+
+
+#load("c:/r/hos/2018/drugrank.Rdata")
+
+###建立drug数据集，统计月度金额 排名 药品名称 病人数 医生数 病人平均药量和医生平均开药量 
+drug<-ddply(x,.(drugID),summarise,value=sum(fee),quant=sum(quant),pnum=length(patientname),
+                   docnum=length(unique(doctorname)))
+drug$rank<-rank(-drug$value)#增加排名字段
+#drugdicname<-subset(drugdic,select = c("药品代码","药品名称"))
+drug<-merge(drug,drugdicname,by.x = "drugID",by.y = "药品代码",all.x = T)#增加药品名称字段
+x<-merge(x,drugdicname,by.x = "drugID",by.y = "药品代码",all.x = T)#增加药品名称字段
+###排名对比见文件最后
+
+ntop<-50
+drugtopID<-drug[which(drug$rank<=ntop),]$drugID#排名前ntop的药品代码
+drug$pnum.mean<-round(drug$quant/drug$pnum,2)#增加病人均次数量
+drug$docnum.mean<-round(drug$quant/drug$docnum,2)#增加医生平均开药数量
+
+
+#取药品排名前列的药品ID
+#ntop<-10
+#drugtopID<-drug[which(drug$rank<=ntop),]$drugID#排名前ntop的药品代码
+
+###药品前ntop汇总数据和明细数据
+drugtop<-drug[which(drug$drugID %in% drugtopID),]#取前ntop名
+drugtop<-drugtop[order(drugtop$rank),]#按照rank排序
+drugtopdetail<-x[x$drugID %in% drugtopID,]#明细信息，同一ID，药品名称不一眼
+str(drugtopdetail)
+# ggplot(data=drugtop,aes(x=药品名称,y=value)) +geom_bar()
+# par(mar=c(10,4,4,4))
+#par(mfrow=c(1,2))
+
+#####################
+###找数量的异常点####
+b1<-boxplot(drugtopdetail$quant~drugtopdetail$药品名称,data = drugtopdetail,xaxt="n",yaxt="n")
+# topdrugnamesb1<-drugdic[which(drugdic$药品代码 %in% b1$names),][,9]
+# axis(1,1:length(b1$names),b1$names,las=2)#有问题，与数据不一一对应
+# axis(2,at=1:ceiling(max(b1$out)))
+
+##找出所有异常点记录
+outlier1<-matrix(b1$stats,ncol = length(b1$names))#有几个药就有几列
+outlier1<-as.data.frame(outlier1)
+colnames(outlier1)<-b1$names
+#i<-b1$names[1]
+quantoutliers<-NULL#初始化
+for (i in colnames(outlier1)) {
+  uplimit<-outlier1[,i][4]+(outlier1[,i][4]-outlier1[,i][2])*1.5
+  quantoutliers<-c(quantoutliers,rownames(subset(x,药品名称==i & quant>uplimit)))
+}
+
+# ###找日均用量的异常点
+# 
+# b2<-boxplot(drugtopdetail$daymean~drugtopdetail$drugID,data = drugtopdetail,xaxt="n",yaxt="n")
+# topdrugnamesb2<-drugdic[which(drugdic$药品代码 %in% b2$names),][,9]
+# axis(1,1:length(topdrugnamesb2),topdrugnamesb2,las=2)
+# axis(2,at=1:ceiling(max(b2$out)))
+# 
+# ##找出所有异常点记录
+# outlier2<-matrix(b2$stats,ncol = length(b2$names))#有几个药就有几列
+# outlier2<-as.data.frame(outlier2)
+# colnames(outlier2)<-b2$names
+# dailyquantoutliers<-NULL#初始化
+# #i<-"2905"
+# for (i in colnames(outlier2)) {
+#   uplimit<-outlier2[,i][4]+(outlier2[,i][4]-outlier2[,i][2])*1.5
+#   dailyquantoutliers<-c(dailyquantoutliers,rownames(subset(x,drugID==i & daymean>uplimit)))
+# }
+# length(quantoutliers)
+# length(dailyquantoutliers)
+# outerlier<-intersect(quantoutliers,dailyquantoutliers)
+
+
+outliers<-x[quantoutliers,]
+#write.table(outliers,"c:/R/hos/outliers2018q1.txt",row.names = F)
+str(outliers)
+outlier2<-ddply(outliers,.(doctorname,patientname,drugname),summarize,outliernum=length(drugID))
+outlier3<-ddply(outliers,.(doctorname,drugname),summarize,outliernum=length(drugID))
+doc.outlier<-ddply(x[quantoutliers,],.(doctorname),summarize,outliernum=length(drugID))#计算每个医师的异常点记录
+doc.outlier<-doc.outlier[order(doc.outlier$outliernum,decreasing = T),]
+drug.outlier<-ddply(x[quantoutliers,],.(药品名称),summarize,outliernum=length(drugID))#计算每个医师的异常点记录
+drug.outlier<-drug.outlier[order(drug.outlier$outliernum,decreasing = T),]
+#write.table(doc.outlier,"c:/R/hos/docoutliers2018q1.txt",row.names = F)
+###找出数量异常点###
+####################
+countoutlier<-list(doc=doc.outlier,drug=drug.outlier,outlier=outliers,drugsheet=drug)
+}
+
+n<-0
+k<-1:5
+for (m in paste("m",k,sep = "")){
+  n<-n+1
+  monthdata<-get(m)
+  tempdata<-assign(paste("countm",n,sep=""),countoutliers(monthdata,drugdicname))
+  
+  write.table(tempdata$doc,paste("c:/r/hos/result/monthdoc",n,".txt",sep = ""),row.names=F,fileEncoding = "UTF-8")
+  write.table(tempdata$drug,paste("c:/r/hos/result/monthdrug",n,".txt",sep = ""),row.names=F,fileEncoding = "UTF-8")
+  write.table(tempdata$outlier,paste("c:/r/hos/result/monthoutlier",n,".txt",sep = ""),row.names=F,fileEncoding = "UTF-8")
+  write.table(tempdata$drugsheet,paste("c:/r/hos/result/monthdrugsheet",n,".txt",sep = ""),row.names=F,fileEncoding = "UTF-8")
+}
+  
+
+
+
+###每月药品排名
+str(x)
+drug.month<-ddply(x,.(drugID,month,药品名称),summarise,value=sum(fee),quant=sum(quant),pnum=length(unique(cardID)),
+                  docnum=length(unique(doctorname)))
+drug.rankmonthly<-ddply(drug.month,.(month),transform,rank=rank(-value))
+
+# drugranktemp<-drug[,c("drugID","药品名称","rank"),]
+# drugranktemp$month<-"201803"
+# drugrank<-rbind(drugrank,drugranktemp)
+# save(drugrank,file="c:/r/hos/2018/drugrank.Rdata")
+#load("c:/r/hos/2018/drugrank.Rdata")
+drugrank.monthly<- dcast(drug.rankmonthly,drugID + 药品名称 ~ month, mean,value.var="rank")
+str(drugrank.monthly)
+# drugrank.monthly$change0201<-drugrank.monthly$"201802"-drugrank.monthly$"201801"
+# drugrank.monthly$change0302<-drugrank.monthly$"201803"-drugrank.monthly$"201802"
+# str(drugrank.monthly)
+
+save(drugrank.monthly,file="c:/r/hos/2018/drugrankopd2018q2.Rdata")
+write.table(drugrank.monthly,"c:/r/hos/2018/drugrankopd2018q2.txt",row.names = F,fileEncoding = "UTF-8")
